@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    background-color: #f8fafc;
+    color: #0f172a;
+  }
+}
+
+.gradient-brand {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 50%, #3730a3 100%);
+}
+
+.gradient-btn {
+  background: linear-gradient(135deg, #1d4ed8 0%, #4338ca 50%, #0891b2 100%);
+}
+
+.kitchen-card {
+  border-radius: 1.25rem !important;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.kitchen-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.05) !important;
+}
