@@ -10,16 +10,42 @@ import {
   MapPin, 
   Phone,
   PackageCheck,
-  ChefHat
+  ChefHat,
+  Printer
 } from 'lucide-react';
+import { printerService } from '../services/printerService';
 
-import { FEMALE_CHEF_IMAGE_BASE64 } from '../assets/female_chef_b64';
 
 export const KitchenDashboard = () => {
   const { user } = useAuth();
   const [orders, setOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('ALL');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [printerStatus, setPrinterStatus] = useState(() => printerService.getStatus());
+  const [printToast, setPrintToast] = useState(null);
+
+  // Subscribe to printer service events (e.g. bluetooth connected/disconnected, auto-print toggle)
+  useEffect(() => {
+    const unsub = printerService.subscribe((newStatus) => {
+      setPrinterStatus(newStatus);
+    });
+    return () => unsub();
+  }, []);
+
+  // Direct manual reprint of any KOT
+  const handleManualPrint = async (order) => {
+    try {
+      const res = await printerService.printKOT(order);
+      setPrintToast({
+        orderNumber: order.order_number || order.id,
+        method: res.method === 'bluetooth' ? `Bluetooth (${res.device})` : 'Physical Thermal Printer',
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      });
+      setTimeout(() => setPrintToast(null), 4500);
+    } catch (err) {
+      console.warn('Manual KOT print failed:', err);
+    }
+  };
 
   const playChimeSound = () => {
     try {
@@ -85,17 +111,43 @@ export const KitchenDashboard = () => {
 
       if (initialLoadedRef.current) {
         let hasBrandNewOrder = false;
+        const autoPrintQueue = [];
+
         updated.forEach(o => {
           const key = String(o.id || o.order_number || '');
           const isPending = String(o.order_status || '').toUpperCase() === 'PENDING';
           if (key && isPending && !playedOrderIdsRef.current.has(key)) {
             hasBrandNewOrder = true;
             playedOrderIdsRef.current.add(key);
+
+            // Check if Auto-Print is enabled and order has not been printed yet
+            if (printerService.isAutoPrintEnabled() && !printerService.isOrderPrinted(key)) {
+              autoPrintQueue.push(o);
+            }
           }
         });
 
         if (hasBrandNewOrder && soundEnabled) {
           playChimeSound();
+        }
+
+        // Execute automatic KOT printing for all incoming new orders
+        if (autoPrintQueue.length > 0) {
+          autoPrintQueue.forEach((newOrder, idx) => {
+            setTimeout(async () => {
+              try {
+                const res = await printerService.printKOT(newOrder);
+                setPrintToast({
+                  orderNumber: newOrder.order_number || newOrder.id,
+                  method: res.method === 'bluetooth' ? `Bluetooth (${res.device})` : 'Physical Thermal Printer',
+                  time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                });
+                setTimeout(() => setPrintToast(null), 5000);
+              } catch (err) {
+                console.warn('Auto print execution error:', err);
+              }
+            }, idx * 1500);
+          });
         }
       } else {
         updated.forEach(o => {
@@ -189,8 +241,8 @@ export const KitchenDashboard = () => {
         <div className="h-1.5 bg-gradient-to-r from-slate-900 via-blue-900 to-indigo-700 w-full" />
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 sm:h-20 flex items-center justify-between">
           <div className="flex items-center gap-3 sm:gap-4">
-            <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-gradient-to-tr from-slate-900 via-blue-900 to-indigo-700 text-white flex items-center justify-center shadow-md shadow-blue-500/20 shrink-0">
-              <ChefHat className="w-6 h-6 text-white" />
+            <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl overflow-hidden shadow-md shadow-blue-500/20 border border-slate-200 shrink-0">
+              <img src="/kitchen-app-icon.png" alt="Kitchen Display" className="w-full h-full object-cover" />
             </div>
             <div>
               <h1 className="font-black text-slate-950 text-lg sm:text-2xl tracking-tight leading-none">
@@ -206,24 +258,13 @@ export const KitchenDashboard = () => {
       </header>
 
       <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
-        {/* Top Header Banner */}
-        <div className="relative overflow-hidden bg-gradient-to-r from-slate-950 via-slate-900 to-blue-950 text-white rounded-3xl p-5 sm:p-6 border border-slate-800/80 shadow-xl flex flex-row items-center justify-between gap-4">
-          {/* Left Content Area */}
-          <div className="z-10 space-y-1">
-            <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center gap-2">
-              Kitchen Display
-            </h1>
-            <p className="text-blue-200/80 text-xs font-medium mt-0.5">Real-time order fulfillment & dispatch monitor</p>
-          </div>
-
-          {/* Right Image Area (Increased Size) */}
-          <div className="w-36 h-36 sm:w-48 sm:h-48 md:w-56 md:h-56 lg:w-64 lg:h-64 shrink-0 flex items-center justify-center -my-6 -mr-4 sm:-my-8 sm:-mr-6 relative">
-            <img 
-              src={FEMALE_CHEF_IMAGE_BASE64} 
-              alt="Kitchen Female Chef" 
-              className="w-full h-full object-contain filter drop-shadow-[0_15px_25px_rgba(0,0,0,0.6)] hover:scale-105 transition duration-300 transform scale-110"
-            />
-          </div>
+        {/* Kitchen Brand Hero Banner */}
+        <div className="w-full rounded-2xl sm:rounded-3xl overflow-hidden shadow-xl border border-slate-200/80 bg-slate-900">
+          <img 
+            src="/kitchen-banner.jpg?v=3" 
+            alt="Arunachala Bhavan Kitchen - Temple of Taste" 
+            className="w-full h-auto max-h-[380px] object-cover block"
+          />
         </div>
 
       {/* 5 KPI METRICS CARDS (ROW 1: NEW & PREPARING | ROW 2: READY & CANCELLED | ROW 3: FULL WIDTH HOME DELIVERY) */}
@@ -355,7 +396,7 @@ export const KitchenDashboard = () => {
               <div key={order.id} className="col-12 col-md-6 col-lg-4">
                 <div className={`rounded-3xl border-2 shadow-lg p-5 flex flex-col justify-between h-100 space-y-4 transition duration-300 ${cardBgClass}`}>
                   <div>
-                    {/* Top Row: Order Type Badge & Status Badge Side-by-Side */}
+                    {/* Top Row: Order Type Badge, Direct Print Button & Status Badge */}
                     <div className="flex items-center justify-between gap-2 border-b border-slate-200/80 pb-2.5 mb-2.5">
                       {isHomeDelivery ? (
                         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-gradient-to-r from-purple-700 via-indigo-700 to-cyan-600 text-white shadow-xs whitespace-nowrap">
@@ -366,7 +407,22 @@ export const KitchenDashboard = () => {
                           <Utensils className="w-3.5 h-3.5" /> Table {String(order.table_number || 0).padStart(2, '0')}
                         </span>
                       )}
-                      <StatusBadge status={order.order_status} />
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleManualPrint(order);
+                          }}
+                          className="bg-white/95 hover:bg-white text-slate-800 hover:text-slate-950 border border-slate-300 px-2.5 py-1 rounded-xl text-[11px] font-black inline-flex items-center gap-1.5 shadow-2xs hover:shadow-xs active:scale-95 transition cursor-pointer"
+                          title="Print Kitchen Order Ticket (KOT)"
+                        >
+                          <Printer className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Print KOT</span>
+                        </button>
+                        <StatusBadge status={order.order_status} />
+                      </div>
                     </div>
 
                     {/* Order Number on its own clean line */}
@@ -478,6 +534,26 @@ export const KitchenDashboard = () => {
         )}
       </div>
       </div>
+
+      {/* Floating Auto-Print Notification Toast */}
+      {printToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-950 text-white border-2 border-emerald-500 rounded-2xl p-4 shadow-2xl flex items-center gap-3.5 animate-slideUp">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/40 shrink-0">
+            <Printer className="w-5 h-5 animate-pulse" />
+          </div>
+          <div>
+            <div className="text-xs font-black text-emerald-400 flex items-center gap-1.5">
+              <span>✓ KOT Ticket Printed</span>
+            </div>
+            <div className="text-sm font-black text-white">
+              Order #{printToast.orderNumber}
+            </div>
+            <div className="text-[11px] text-slate-400">
+              Dispatched to {printToast.method} at {printToast.time}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
