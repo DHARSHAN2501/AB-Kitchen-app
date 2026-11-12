@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { printerService } from '../services/printerService';
+import { showToast } from './Toast';
 import { 
   Printer, 
   Bluetooth, 
@@ -34,15 +35,17 @@ export const PrinterSettingsModal = ({ isOpen, onClose, soundEnabled, setSoundEn
     const nextVal = !printerStatus.autoPrintEnabled;
     printerService.setAutoPrintEnabled(nextVal);
     setPrinterStatus(prev => ({ ...prev, autoPrintEnabled: nextVal }));
-    setFeedback({
-      type: 'success',
-      text: nextVal ? '✓ Auto-print enabled for incoming orders' : 'Auto-print disabled'
-    });
+    const msg = nextVal ? 'Auto-print enabled for incoming orders' : 'Auto-print disabled';
+    setFeedback({ type: 'success', text: `✓ ${msg}` });
+    showToast({ title: 'Saved', message: msg, variant: 'success' });
   };
 
   const handleSelectPaper = (size) => {
     printerService.setPaperSize(size);
     setPrinterStatus(prev => ({ ...prev, paperSize: size }));
+    const msg = `Thermal paper width saved (${size})`;
+    setFeedback({ type: 'success', text: `✓ ${msg}` });
+    showToast({ title: 'Updated', message: msg, variant: 'success' });
   };
 
   const handleConnectBluetooth = async () => {
@@ -50,16 +53,14 @@ export const PrinterSettingsModal = ({ isOpen, onClose, soundEnabled, setSoundEn
     setFeedback(null);
     try {
       const name = await printerService.connectBluetooth();
-      setFeedback({
-        type: 'success',
-        text: `✓ Connected to mobile Bluetooth printer: ${name}`
-      });
+      const msg = `Connected to mobile Bluetooth printer: ${name}`;
+      setFeedback({ type: 'success', text: `✓ ${msg}` });
+      showToast({ title: 'Saved', message: msg, variant: 'success' });
     } catch (err) {
       if (err.name !== 'NotFoundError') { // User didn't just cancel picker
-        setFeedback({
-          type: 'error',
-          text: err.message || 'Could not connect to Bluetooth printer'
-        });
+        const errMsg = err.message || 'Could not connect to Bluetooth printer';
+        setFeedback({ type: 'error', text: errMsg });
+        showToast({ title: 'Error', message: errMsg, variant: 'danger' });
       }
     } finally {
       setConnectingBt(false);
@@ -72,6 +73,7 @@ export const PrinterSettingsModal = ({ isOpen, onClose, soundEnabled, setSoundEn
       type: 'info',
       text: 'Bluetooth printer disconnected'
     });
+    showToast({ title: 'Updated', message: 'Bluetooth printer disconnected.', variant: 'info' });
   };
 
   const handleTestPrint = async () => {
@@ -80,23 +82,24 @@ export const PrinterSettingsModal = ({ isOpen, onClose, soundEnabled, setSoundEn
     try {
       const res = await printerService.printTestKOT();
       if (res.success) {
-        setFeedback({
-          type: 'success',
-          text: res.method === 'bluetooth' 
-            ? '✓ Test KOT sent to Bluetooth printer!' 
-            : '✓ Test KOT sent to physical printer!'
-        });
+        const msg = res.method === 'bluetooth'
+          ? 'Test KOT sent to Bluetooth printer!'
+          : 'Test KOT sent to physical printer!';
+        setFeedback({ type: 'success', text: `✓ ${msg}` });
+        showToast({ title: 'Completed', message: msg, variant: 'success' });
       } else {
         setFeedback({
           type: 'error',
           text: res.error || 'Test print failed'
         });
+        showToast({ title: 'Error', message: res.error || 'Test print failed', variant: 'danger' });
       }
     } catch (err) {
       setFeedback({
         type: 'error',
         text: err.message || 'Test print failed'
       });
+      showToast({ title: 'Error', message: err.message || 'Test print failed', variant: 'danger' });
     } finally {
       setTestingPrint(false);
     }
@@ -191,7 +194,13 @@ export const PrinterSettingsModal = ({ isOpen, onClose, soundEnabled, setSoundEn
             </div>
 
             <button
-              onClick={() => setSoundEnabled(!soundEnabled)}
+              onClick={() => {
+                const next = !soundEnabled;
+                setSoundEnabled(next);
+                const msg = next ? 'New order audio chime enabled' : 'New order audio chime muted';
+                setFeedback({ type: 'success', text: `✓ ${msg}` });
+                showToast({ title: 'Updated', message: msg, variant: 'success' });
+              }}
               className={`p-2.5 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 soundEnabled 
                   ? 'bg-blue-600 text-white border-blue-600 shadow-sm' 
@@ -341,10 +350,17 @@ export const PrinterSettingsModal = ({ isOpen, onClose, soundEnabled, setSoundEn
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => {
+              onClose();
+              showToast({
+                title: 'Saved',
+                message: 'Kitchen printer settings saved.',
+                variant: 'success'
+              });
+            }}
             className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-black py-2.5 px-6 rounded-xl text-xs transition cursor-pointer shadow-md shadow-blue-500/20 active:scale-95"
           >
-            Done
+            Save &amp; Close
           </button>
         </div>
 

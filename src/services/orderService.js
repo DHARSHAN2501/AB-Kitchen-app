@@ -1,14 +1,37 @@
-import { 
-  getOrders as ajaxGetOrders, 
-  getOrderById as ajaxGetOrderById, 
-  getCustomerOrders as ajaxGetCustomerOrders, 
-  createOrder as ajaxCreateOrder, 
-  updateOrderStatus as ajaxUpdateOrderStatus, 
-  requestBill as ajaxRequestBill, 
-  markBillPaid as ajaxMarkBillPaid,
-  createOrderItems as ajaxCreateOrderItems
+import {
+  getOrders as ajaxGetOrders,
+  updateOrderStatus as ajaxUpdateOrderStatus
 } from './api.js';
-import { supabase, isSupabaseConfigured, localDB } from './supabase.js';
+import { supabase, isSupabaseConfigured } from './supabase.js';
+
+let cachedKitchenOrders = null;
+
+function sortOrdersDesc(list) {
+  return [...list].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+}
+
+function applyRealtimeOrderChange(currentList, payload) {
+  if (!Array.isArray(currentList) || !payload) return null;
+  const { eventType, new: newRow, old: oldRow } = payload;
+
+  if (eventType === 'DELETE') {
+    const delId = oldRow?.id;
+    return delId ? currentList.filter(o => o.id !== delId) : null;
+  }
+
+  if (eventType === 'INSERT' || eventType === 'UPDATE') {
+    if (!newRow || !newRow.id) return null;
+    const idx = currentList.findIndex(o => o.id === newRow.id || (o.order_number && o.order_number === newRow.order_number));
+    if (idx >= 0) {
+      const next = [...currentList];
+      next[idx] = { ...next[idx], ...newRow };
+      return next;
+    }
+    return sortOrdersDesc([newRow, ...currentList]);
+  }
+
+  return null;
+}
 
 // Helper to identify bulk order (Home Delivery or >= 25 items or is_bulk flag)
 export const isBulkOrder = (order) => {
@@ -26,200 +49,70 @@ export const isBulkOrder = (order) => {
 
 export const orderService = {
   getOrders: async () => {
-    let localList = [];
-    try {
-      localList = localDB.getOrders() || [];
-    } catch (e) {}
-
     try {
       const remoteData = await ajaxGetOrders();
       if (remoteData && Array.isArray(remoteData)) {
-        try {
-          localDB.saveOrders(remoteData);
-        } catch (e) {}
-        return remoteData.sort((a, b) => {
-          return new Date(b.created_at || Date.now()) - new Date(a.created_at || Date.now());
-        });
+        cachedKitchenOrders = sortOrdersDesc(remoteData);
+        return cachedKitchenOrders;
       }
     } catch (e) {
-      console.warn('AJAX getOrders failed, using localDB fallback:', e.message);
+      console.warn('AJAX getOrders error:', e.message);
     }
-    return localList;
-  },
-
-  getOrdersByTable: async (tableNumber) => {
-    try {
-      const data = await ajaxGetCustomerOrders(tableNumber);
-      if (data && Array.isArray(data) && data.length > 0) {
-        return data;
-      }
-    } catch (e) {}
-    const list = await orderService.getOrders();
-    return list.filter(o => Number(o.table_number) === Number(tableNumber));
-  },
-
-  getOrderById: async (orderId) => {
-    try {
-      const data = await ajaxGetOrderById(orderId);
-      if (data) return data;
-    } catch (e) {}
-    const list = await orderService.getOrders();
-    return list.find(o => o.id === orderId || o.order_number === orderId);
-  },
-
-  createOrder: async (orderPayload) => {
-    // 1. Create in localDB first to guarantee instant UI response & cross-tab BroadcastChannel events
-    const localOrder = localDB.createOrder(orderPayload);
-
-    // 2. Format items list for both JSONB storage and relational table
-    const formattedItems = (orderPayload.items || []).map(i => ({
-      menu_item_id: i.menu_item_id || i.menuItem?.id || '',
-      item_name: i.item_name || i.menuItem?.name || 'Food Item',
-      quantity: Number(i.quantity || 1),
-      price: Number(i.price || i.menuItem?.price || 0),
-      special_instruction: i.special_instruction || ''
-    }));
-
-    // 3. Insert into Supabase via AJAX REST API
-    try {
-      const dbOrderPayload = {
-        id: localOrder.id,
-        order_number: localOrder.order_number,
-        table_number: Number(orderPayload.table_number),
-        customer_name: orderPayload.customer_name || 'Guest Customer',
-        subtotal: Number(orderPayload.subtotal || 0),
-        tax: Number(orderPayload.tax || 0),
-        total_amount: Number(orderPayload.total_amount || 0),
-        order_status: 'PENDING',
-        bill_status: 'NOT_REQUESTED',
-        notes: orderPayload.notes || '',
-        items: formattedItems
-      };
-
-      const res = await ajaxCreateOrder(dbOrderPayload);
-      const insertedOrder = Array.isArray(res) ? res[0] : res;
-
-      if (insertedOrder && formattedItems.length > 0) {
-        const itemsToInsert = formattedItems.map(i => ({
-          order_id: insertedOrder.id || localOrder.id,
-          menu_item_id: i.menu_item_id,
-          item_name: i.item_name,
-          quantity: i.quantity,
-          price: i.price,
-          special_instruction: i.special_instruction
-        }));
-        await ajaxCreateOrderItems(itemsToInsert);
-      }
-    } catch (e) {
-      console.warn('AJAX createOrder error:', e.message);
-    }
-
-    return localOrder;
+    return cachedKitchenOrders || [];
   },
 
   updateOrderStatus: async (orderId, status) => {
-    const s = String(status || '').toUpperCase();
-    if (s === 'CANCELLED' || s === 'CANCEL_REQUESTED') {
-      const existing = await orderService.getOrderById(orderId);
-      if (existing) {
-        const isBulk = isBulkOrder(existing);
-        const current = String(existing.order_status || '').toUpperCase();
-        const bill = String(existing.bill_status || '').toUpperCase();
-        if (current === 'SERVED' || current === 'DELIVERED' || current === 'COMPLETED' || bill === 'PAID') {
-          console.warn('Cannot cancel an order that has already been served or delivered successfully.');
-          return false;
-        }
-        if (isBulk && current !== 'PENDING' && current !== 'CANCEL_REQUESTED') {
-          console.warn('Bulk orders in progress (ACCEPTED/PREPARING/READY/DISPATCHED) cannot be cancelled online. Contact Arunachala Bhavan: +65 8226 1646, +65 8452 1058');
-          return false;
-        }
-      }
+    const res = await ajaxUpdateOrderStatus(orderId, status);
+    const updatedRow = Array.isArray(res) ? res[0] : res;
+    if (Array.isArray(cachedKitchenOrders)) {
+      cachedKitchenOrders = cachedKitchenOrders.map(o =>
+        (o.id === orderId || o.order_number === orderId)
+          ? { ...o, ...(updatedRow || {}), order_status: status }
+          : o
+      );
     }
-    localDB.updateOrderStatus(orderId, status);
-    try {
-      await ajaxUpdateOrderStatus(orderId, status);
-    } catch (e) {
-      console.warn('AJAX updateOrderStatus error:', e.message);
-    }
-    return true;
-  },
-
-  requestBillForTable: async (tableNumber) => {
-    const list = await orderService.getOrdersByTable(tableNumber);
-    list.forEach(o => {
-      if (o.bill_status !== 'PAID') {
-        localDB.updateBillStatus(o.id, 'REQUESTED');
-        ajaxRequestBill(o.id).catch(() => {});
-      }
-    });
-    return true;
-  },
-
-  markBillAsPaid: async (orderId) => {
-    localDB.updateBillStatus(orderId, 'PAID');
-    try {
-      await ajaxMarkBillPaid(orderId);
-    } catch (e) {}
-    return true;
+    return updatedRow || { id: orderId, order_status: status };
   },
 
   subscribeToOrders: (callback) => {
     const cleanups = [];
+    let isRealtimeSubscribed = false;
+    let hasConnectedOnce = false;
 
-    // Supabase Realtime Channel with Reconnect Reconciliation
     if (isSupabaseConfigured()) {
       try {
-        let channelConnected = false;
         const sub = supabase
           .channel('public:orders')
           .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, payload => {
-            callback(payload);
+            const patched = applyRealtimeOrderChange(cachedKitchenOrders, payload);
+            if (patched) {
+              cachedKitchenOrders = patched;
+              callback({ eventType: payload.eventType, new: payload.new, old: payload.old, orders: patched });
+            } else {
+              callback(payload);
+            }
           })
           .subscribe((status) => {
             if (status === 'SUBSCRIBED') {
-              if (channelConnected) {
-                // Reconnected after disconnect — reconcile fresh kitchen orders immediately
+              isRealtimeSubscribed = true;
+              if (hasConnectedOnce) {
                 orderService.getOrders().then(fresh => {
                   callback({ eventType: 'RECONNECT_RESYNC', orders: fresh });
                 }).catch(() => {});
               }
-              channelConnected = true;
+              hasConnectedOnce = true;
             } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-              channelConnected = false;
+              isRealtimeSubscribed = false;
             }
           });
         cleanups.push(() => supabase.removeChannel(sub));
       } catch (e) {}
     }
 
-    // BroadcastChannel (Instant cross-tab real-time sync)
-    if (typeof BroadcastChannel !== 'undefined') {
-      try {
-        const bc = new BroadcastChannel('smart_rest_bc_orders');
-        bc.onmessage = (event) => {
-          callback({ eventType: 'UPDATE', detail: event.data?.detail });
-        };
-        cleanups.push(() => bc.close());
-      } catch (e) {}
-    }
-
-    // Local CustomEvent Listener
-    const customListener = (e) => callback({ eventType: 'UPDATE', detail: e.detail });
-    window.addEventListener('smart_rest_event_orders', customListener);
-    cleanups.push(() => window.removeEventListener('smart_rest_event_orders', customListener));
-
-    // Native Storage Event (Fires across all open browser tabs/apps)
-    const storageListener = (e) => {
-      if (e.key === 'smart_rest_orders') {
-        callback({ eventType: 'UPDATE' });
-      }
-    };
-    window.addEventListener('storage', storageListener);
-    cleanups.push(() => window.removeEventListener('storage', storageListener));
-
-    // Adaptive Ajax Auto-Refresh Interval (Fallback polling when tab is visible, passing data directly)
+    // Fallback poll runs ONLY when WebSocket Realtime is not SUBSCRIBED and tab is visible
     let isPolling = false;
     const pollInterval = setInterval(async () => {
+      if (isRealtimeSubscribed) return;
       if (typeof document !== 'undefined' && document.hidden) return;
       if (isPolling) return;
       isPolling = true;
@@ -230,7 +123,7 @@ export const orderService = {
       } finally {
         isPolling = false;
       }
-    }, 8000);
+    }, 25000);
     cleanups.push(() => clearInterval(pollInterval));
 
     return () => {

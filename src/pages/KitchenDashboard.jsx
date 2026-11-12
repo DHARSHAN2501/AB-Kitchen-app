@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { orderService } from '../services/orderService';
-import { useAuth } from '../context/AuthContext';
 import { StatusBadge } from '../components/StatusBadge';
+import { showToast } from '../components/Toast';
 import { 
   CheckCircle2, 
   Utensils, 
@@ -17,10 +17,11 @@ import { printerService } from '../services/printerService';
 
 
 export const KitchenDashboard = () => {
-  const { user } = useAuth();
   const [orders, setOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('ALL');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const soundEnabledRef = useRef(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
   const [printerStatus, setPrinterStatus] = useState(() => printerService.getStatus());
   const [printToast, setPrintToast] = useState(null);
 
@@ -127,7 +128,7 @@ export const KitchenDashboard = () => {
           }
         });
 
-        if (hasBrandNewOrder && soundEnabled) {
+        if (hasBrandNewOrder && soundEnabledRef.current) {
           playChimeSound();
         }
 
@@ -160,25 +161,90 @@ export const KitchenDashboard = () => {
     });
 
     return () => unsub();
-  }, [soundEnabled]);
+  }, []);
 
   const handleUpdateStatus = async (orderId, newStatus) => {
-    if (newStatus === 'CANCELLED') {
-      const target = orders.find(o => o.id === orderId || o.order_number === orderId);
-      if (target) {
-        const isBulk = checkIsBulkOrder(target);
-        const s = String(target.order_status || '').toUpperCase();
-        if (s === 'SERVED' || s === 'DELIVERED' || s === 'COMPLETED' || String(target.bill_status || '').toUpperCase() === 'PAID') {
-          return;
-        }
-        if (isBulk && s !== 'PENDING' && s !== 'CANCEL_REQUESTED') {
-          return;
-        }
+    const target = orders.find(o => o.id === orderId || o.order_number === orderId);
+    const orderLabel = target?.order_number ? `#${target.order_number}` : `Order #${orderId}`;
+    const prevStatus = String(target?.order_status || '').toUpperCase();
+
+    if (newStatus === 'CANCELLED' && target) {
+      const isBulk = checkIsBulkOrder(target);
+      if (prevStatus === 'SERVED' || prevStatus === 'DELIVERED' || prevStatus === 'COMPLETED' || String(target.bill_status || '').toUpperCase() === 'PAID') {
+        showToast({
+          title: 'Blocked',
+          message: `${orderLabel} cannot be cancelled because it is already served or paid.`,
+          variant: 'warning'
+        });
+        return;
+      }
+      if (isBulk && prevStatus !== 'PENDING' && prevStatus !== 'CANCEL_REQUESTED') {
+        showToast({
+          title: 'Blocked',
+          message: `Bulk ${orderLabel} is already in kitchen preparation and cannot be cancelled.`,
+          variant: 'warning'
+        });
+        return;
       }
     }
-    await orderService.updateOrderStatus(orderId, newStatus);
-    const data = await orderService.getOrders();
-    if (data) setOrders(data);
+
+    // Optimistic update for instant response without waiting for an extra round-trip fetch
+    const previousOrders = orders;
+    setOrders(prev =>
+      prev.map(o =>
+        (o.id === orderId || o.order_number === orderId)
+          ? { ...o, order_status: newStatus }
+          : o
+      )
+    );
+
+    try {
+      const updatedRow = await orderService.updateOrderStatus(orderId, newStatus);
+      if (updatedRow && typeof updatedRow === 'object') {
+        setOrders(prev =>
+          prev.map(o =>
+            (o.id === orderId || o.order_number === orderId)
+              ? { ...o, ...updatedRow, order_status: newStatus }
+              : o
+          )
+        );
+      }
+
+      const toastMap = {
+        PREPARING: {
+          title: 'Updated',
+          message: prevStatus === 'CANCEL_REQUESTED'
+            ? `${orderLabel} kept and resumed cooking.`
+            : `${orderLabel} accepted & moved to Preparing.`
+        },
+        READY: {
+          title: 'Updated',
+          message: `${orderLabel} marked Ready for Pickup / Dispatch!`
+        },
+        SERVED: {
+          title: 'Completed',
+          message: `${orderLabel} marked ${checkIsHomeDelivery(target) ? 'Dispatched / Delivered' : 'Served & Completed'}!`
+        },
+        CANCELLED: {
+          title: 'Cancelled',
+          message: `${orderLabel} cancelled successfully.`
+        }
+      };
+
+      const info = toastMap[newStatus] || {
+        title: 'Updated',
+        message: `${orderLabel} updated to ${newStatus}.`
+      };
+      showToast({ ...info, variant: 'success' });
+    } catch (err) {
+      setOrders(previousOrders);
+      console.error('Failed to update order status:', err);
+      showToast({
+        title: 'Error',
+        message: `Failed to update ${orderLabel}. Please try again.`,
+        variant: 'danger'
+      });
+    }
   };
 
   // Order filters memoized for optimal React rendering performance

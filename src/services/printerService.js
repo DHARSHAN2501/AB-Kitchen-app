@@ -249,7 +249,7 @@ class PrinterService {
     append([0x1B, 0x21, 0x00]); // Normal
 
     text(`Order #   : ${order.order_number || order.id || 'N/A'}\n`);
-    const dateStr = order.created_at ? new Date(order.created_at).toLocaleString('en-IN') : new Date().toLocaleString('en-IN');
+    const dateStr = order.created_at ? new Date(order.created_at).toLocaleString('en-SG') : new Date().toLocaleString('en-SG');
     text(`Time      : ${dateStr}\n`);
     
     if (order.customer_name) {
@@ -326,7 +326,7 @@ class PrinterService {
     const widthMm = paperSize === '58mm' ? '54mm' : '76mm';
     const isDelivery = order.order_type === 'HOME_DELIVERY' || Number(order.table_number) === 0 || Boolean(order.delivery_address);
     const tableText = isDelivery ? 'HOME DELIVERY' : `TABLE T-${String(order.table_number || '01').padStart(2, '0')}`;
-    const dateStr = order.created_at ? new Date(order.created_at).toLocaleString('en-IN') : new Date().toLocaleString('en-IN');
+    const dateStr = order.created_at ? new Date(order.created_at).toLocaleString('en-SG') : new Date().toLocaleString('en-SG');
 
     const rawItems = Array.isArray(order.items) 
       ? order.items 
